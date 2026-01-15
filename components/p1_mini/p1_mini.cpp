@@ -270,15 +270,70 @@ namespace esphome {
                         int a_part{ -1 }, b_part{ -1 }, major{ -1 }, minor{ -1 }, micro{ -1 };
                         double value{ -1.0 };
                         bool matched_sensor{ false };
+                        bool is_sensor_line{ false };
 
-                        // Try to parse full OBIS format: A-B:C.D.E(value)
-                        bool is_full_obis_sensor{ sscanf(m_start_of_data, "%d-%d:%d.%d.%d(%lf", &a_part, &b_part, &major, &minor, &micro, &value) == 6 };
+                        // Try to parse full OBIS format: A-B:C.D.E(value) or A-B:C.D.E(...)(value*unit)
+                        if (sscanf(m_start_of_data, "%d-%d:%d.%d.%d(", &a_part, &b_part, &major, &minor, &micro) == 5) {
+                            is_sensor_line = true;
+
+                            // Find the OBIS code end and start looking for numeric values
+                            char *obis_end = strchr(m_start_of_data, '(');
+                            if (obis_end != nullptr) {
+                                char *current_pos = obis_end + 1;
+
+                                // Look through all parentheses pairs to find a numeric value
+                                while (*current_pos != '\0' && *current_pos != '!') {
+                                    // Skip to the start of the parentheses content
+                                    if (*current_pos == '(') {
+                                        current_pos++;
+                                    }
+
+                                    // Try to extract a numeric value, ignoring units and other text
+                                    char *value_start = current_pos;
+                                    char *value_end = strchr(current_pos, ')');
+                                    if (value_end != nullptr) {
+                                        // Temporarily null-terminate to parse this parentheses content
+                                        char saved_char = *value_end;
+                                        *value_end = '\0';
+
+                                        // Try to parse as a number, skipping non-numeric prefixes
+                                        char *num_start = value_start;
+                                        while (*num_start != '\0' && !std::isdigit(*num_start) && *num_start != '-' && *num_start != '+') {
+                                            num_start++;
+                                        }
+
+                                        if (*num_start != '\0') {
+                                            char *endptr;
+                                            double parsed_value = strtod(num_start, &endptr);
+
+                                            // If we successfully parsed a number and it's not just a timestamp-looking number
+                                            if (endptr > num_start && (parsed_value < 99999999 || strchr(num_start, '.'))) {
+                                                value = parsed_value;
+                                                *value_end = saved_char;
+                                                break;
+                                            }
+                                        }
+
+                                        *value_end = saved_char;
+                                        current_pos = value_end + 1;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
                         // Try to parse legacy format: 1-0:C.D.E(value) - for backward compatibility
-                        bool is_legacy_sensor{ !is_full_obis_sensor && sscanf(m_start_of_data, "1-0:%d.%d.%d(%lf", &major, &minor, &micro, &value) == 4 };
-                        // Try to parse simple format: C.D.E(value) - for backward compatibility
-                        bool is_simple_sensor{ !is_full_obis_sensor && !is_legacy_sensor && sscanf(m_start_of_data, "%d.%d.%d(%lf", &major, &minor, &micro, &value) == 4 };
+                        if (!is_sensor_line && sscanf(m_start_of_data, "1-0:%d.%d.%d(%lf", &major, &minor, &micro, &value) == 4) {
+                            is_sensor_line = true;
+                        }
 
-                        if (is_full_obis_sensor || is_legacy_sensor || is_simple_sensor) {
+                        // Try to parse simple format: C.D.E(value) - for backward compatibility
+                        if (!is_sensor_line && sscanf(m_start_of_data, "%d.%d.%d(%lf", &major, &minor, &micro, &value) == 4) {
+                            is_sensor_line = true;
+                        }
+
+                        if (is_sensor_line) {
                             auto iter{ m_sensors.find(OBIS(major, minor, micro)) };
                             if (iter != m_sensors.end()) {
                                 matched_sensor = true;
@@ -295,8 +350,8 @@ namespace esphome {
                             }
                         }
                         if (!matched_sensor) {
-                            if (is_full_obis_sensor || is_legacy_sensor || is_simple_sensor)
-                                ESP_LOGD(TAG, "No sensor matched line '%s' with obis code %d.%d.%d", m_start_of_data, major, minor, micro);
+                            if (is_sensor_line)
+                                ESP_LOGD(TAG, "No sensor matched line '%s' with obis code %d.%d.%d (parsed value: %f)", m_start_of_data, major, minor, micro, value);
                             else
                                 ESP_LOGD(TAG, "No sensor matched line '%s'", m_start_of_data);
                         }
