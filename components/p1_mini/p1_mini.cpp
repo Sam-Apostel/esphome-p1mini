@@ -279,46 +279,57 @@ namespace esphome {
                             // Find the OBIS code end and start looking for numeric values
                             char *obis_end = strchr(m_start_of_data, '(');
                             if (obis_end != nullptr) {
-                                char *current_pos = obis_end + 1;
+                                char *current_pos = obis_end;
+                                bool found_valid_value = false;
 
                                 // Look through all parentheses pairs to find a numeric value
-                                while (*current_pos != '\0' && *current_pos != '!') {
-                                    // Skip to the start of the parentheses content
-                                    if (*current_pos == '(') {
-                                        current_pos++;
+                                while (*current_pos != '\0' && *current_pos != '!' && !found_valid_value) {
+                                    // Find the opening parenthesis
+                                    current_pos = strchr(current_pos, '(');
+                                    if (current_pos == nullptr) break;
+
+                                    current_pos++; // Skip the '('
+
+                                    // Find the closing parenthesis
+                                    char *value_end = strchr(current_pos, ')');
+                                    if (value_end == nullptr) break;
+
+                                    // Temporarily null-terminate to parse this parentheses content
+                                    char saved_char = *value_end;
+                                    *value_end = '\0';
+
+                                    // Check if this looks like a timestamp (ends with W or S, or is a long number without decimals)
+                                    bool is_timestamp = false;
+                                    size_t content_len = strlen(current_pos);
+                                    if (content_len > 10 && (current_pos[content_len-1] == 'W' || current_pos[content_len-1] == 'S')) {
+                                        is_timestamp = true;
+                                    } else if (content_len > 10 && strspn(current_pos, "0123456789") == content_len) {
+                                        is_timestamp = true; // All digits and very long, likely timestamp
                                     }
 
-                                    // Try to extract a numeric value, ignoring units and other text
-                                    char *value_start = current_pos;
-                                    char *value_end = strchr(current_pos, ')');
-                                    if (value_end != nullptr) {
-                                        // Temporarily null-terminate to parse this parentheses content
-                                        char saved_char = *value_end;
-                                        *value_end = '\0';
-
-                                        // Try to parse as a number, skipping non-numeric prefixes
-                                        char *num_start = value_start;
-                                        while (*num_start != '\0' && !std::isdigit(*num_start) && *num_start != '-' && *num_start != '+') {
+                                    if (!is_timestamp) {
+                                        // Try to parse as a number, handling potential units
+                                        char *num_start = current_pos;
+                                        // Skip leading zeros and find first significant digit or decimal
+                                        while (*num_start == '0' && *(num_start + 1) != '.' && *(num_start + 1) != '\0') {
                                             num_start++;
                                         }
 
-                                        if (*num_start != '\0') {
-                                            char *endptr;
-                                            double parsed_value = strtod(num_start, &endptr);
+                                        char *endptr;
+                                        double parsed_value = strtod(num_start, &endptr);
 
-                                            // If we successfully parsed a number and it's not just a timestamp-looking number
-                                            if (endptr > num_start && (parsed_value < 99999999 || strchr(num_start, '.'))) {
-                                                value = parsed_value;
-                                                *value_end = saved_char;
-                                                break;
-                                            }
+                                        // Valid if we parsed something and there's either a decimal point or units after the number
+                                        if (endptr > num_start) {
+                                            value = parsed_value;
+                                            found_valid_value = true;
+                                            ESP_LOGD(TAG, "Parsed value %f from parentheses content: '%s'", value, current_pos);
                                         }
-
-                                        *value_end = saved_char;
-                                        current_pos = value_end + 1;
                                     } else {
-                                        break;
+                                        ESP_LOGD(TAG, "Skipping timestamp content: '%s'", current_pos);
                                     }
+
+                                    *value_end = saved_char;
+                                    current_pos = value_end + 1;
                                 }
                             }
                         }
