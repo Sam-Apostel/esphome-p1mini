@@ -4,6 +4,7 @@ from esphome.components import uart
 from esphome.components import binary_sensor
 from esphome.const import CONF_ID, CONF_TRIGGER_ID
 from esphome import automation
+import re
 
 DEPENDENCIES = ['uart']
 p1_mini_ns = cg.esphome_ns.namespace('p1_mini')
@@ -103,10 +104,17 @@ async def to_code(config):
 
 def obis_code(value):
     value = cv.string(value)
-    #match = re.match(r"^\d{1,3}-\d{1,3}:\d{1,3}\.\d{1,3}\.\d{1,3}$", value)
-    # if match is None:
-    #    raise cv.Invalid(f"{value} is not a valid OBIS code")
-    return value
+
+    # Check for full OBIS code format: A-B:C.D.E (e.g., "0-1:24.2.3")
+    full_obis_match = re.match(r"^\d{1,3}-\d{1,3}:\d{1,3}\.\d{1,3}\.\d{1,3}$", value)
+
+    # Check for simple format: C.D.E (e.g., "22.7.0")
+    simple_obis_match = re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}$", value)
+
+    if full_obis_match or simple_obis_match:
+        return value
+    else:
+        raise cv.Invalid(f"{value} is not a valid OBIS code. Supported formats: 'A-B:C.D.E' (e.g., '0-1:24.2.3') or 'C.D.E' (e.g., '22.7.0')")
 
 def identifier(value):
     value = cv.string(value)

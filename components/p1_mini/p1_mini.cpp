@@ -43,17 +43,42 @@ namespace esphome {
 
             inline uint32_t OBIS(char const *code)
             {
+                uint32_t a_part{ 0 };
+                uint32_t b_part{ 0 };
                 uint32_t major{ 0 };
                 uint32_t minor{ 0 };
                 uint32_t micro{ 0 };
 
                 char const *C{ code };
-                while (std::isdigit(*C)) major = major * 10 + (*C++ - '0');
-                if (*C++ == '\0') return OBIS_ERROR;
-                while (std::isdigit(*C)) minor = minor * 10 + (*C++ - '0');
-                if (*C++ == '\0') return OBIS_ERROR;
-                while (std::isdigit(*C)) micro = micro * 10 + (*C++ - '0');
-                if (*C++ != '\0') return OBIS_ERROR;
+
+                // Parse first number
+                while (std::isdigit(*C)) a_part = a_part * 10 + (*C++ - '0');
+                if (*C == '\0') return OBIS_ERROR;
+
+                // Check if this is full format (A-B:C.D.E) or simple format (C.D.E)
+                if (*C == '-') {
+                    // Full format: A-B:C.D.E
+                    C++; // Skip the '-'
+                    while (std::isdigit(*C)) b_part = b_part * 10 + (*C++ - '0');
+                    if (*C++ != ':') return OBIS_ERROR;
+                    while (std::isdigit(*C)) major = major * 10 + (*C++ - '0');
+                    if (*C++ != '.') return OBIS_ERROR;
+                    while (std::isdigit(*C)) minor = minor * 10 + (*C++ - '0');
+                    if (*C++ != '.') return OBIS_ERROR;
+                    while (std::isdigit(*C)) micro = micro * 10 + (*C++ - '0');
+                    if (*C != '\0') return OBIS_ERROR;
+                } else if (*C == '.') {
+                    // Simple format: C.D.E (treat first parsed number as major)
+                    major = a_part;
+                    C++; // Skip the '.'
+                    while (std::isdigit(*C)) minor = minor * 10 + (*C++ - '0');
+                    if (*C++ != '.') return OBIS_ERROR;
+                    while (std::isdigit(*C)) micro = micro * 10 + (*C++ - '0');
+                    if (*C != '\0') return OBIS_ERROR;
+                } else {
+                    return OBIS_ERROR;
+                }
+
                 return OBIS(major, minor, micro);
             }
 
@@ -242,11 +267,18 @@ namespace esphome {
                     *end_of_line = '\0';
 
                     if (end_of_line != m_start_of_data) {
-                        int minor{ -1 }, major{ -1 }, micro{ -1 };
+                        int a_part{ -1 }, b_part{ -1 }, major{ -1 }, minor{ -1 }, micro{ -1 };
                         double value{ -1.0 };
                         bool matched_sensor{ false };
-                        bool is_regular_sensor{ sscanf(m_start_of_data, "1-0:%d.%d.%d(%lf", &major, &minor, &micro, &value) == 4 };
-                        if (is_regular_sensor) {
+
+                        // Try to parse full OBIS format: A-B:C.D.E(value)
+                        bool is_full_obis_sensor{ sscanf(m_start_of_data, "%d-%d:%d.%d.%d(%lf", &a_part, &b_part, &major, &minor, &micro, &value) == 6 };
+                        // Try to parse legacy format: 1-0:C.D.E(value) - for backward compatibility
+                        bool is_legacy_sensor{ !is_full_obis_sensor && sscanf(m_start_of_data, "1-0:%d.%d.%d(%lf", &major, &minor, &micro, &value) == 4 };
+                        // Try to parse simple format: C.D.E(value) - for backward compatibility
+                        bool is_simple_sensor{ !is_full_obis_sensor && !is_legacy_sensor && sscanf(m_start_of_data, "%d.%d.%d(%lf", &major, &minor, &micro, &value) == 4 };
+
+                        if (is_full_obis_sensor || is_legacy_sensor || is_simple_sensor) {
                             auto iter{ m_sensors.find(OBIS(major, minor, micro)) };
                             if (iter != m_sensors.end()) {
                                 matched_sensor = true;
@@ -263,7 +295,7 @@ namespace esphome {
                             }
                         }
                         if (!matched_sensor) {
-                            if (is_regular_sensor)
+                            if (is_full_obis_sensor || is_legacy_sensor || is_simple_sensor)
                                 ESP_LOGD(TAG, "No sensor matched line '%s' with obis code %d.%d.%d", m_start_of_data, major, minor, micro);
                             else
                                 ESP_LOGD(TAG, "No sensor matched line '%s'", m_start_of_data);
